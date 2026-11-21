@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#FFFFFF</color>
+
+    <!-- Material 3 Light Palette -->
+    <color name="tg_primary">#1A56DB</color>
+    <color name="tg_on_primary">#FFFFFF</color>
+    <color name="tg_primary_container">#DBEAFE</color>
+    <color name="tg_on_primary_container">#0F296B</color>
+
+    <color name="tg_secondary">#0F766E</color>
+    <color name="tg_on_secondary">#FFFFFF</color>
+    <color name="tg_secondary_container">#CCFBF1</color>
+    <color name="tg_on_secondary_container">#0D3D38</color>
+
+    <color name="tg_tertiary">#B45309</color>
+    <color name="tg_on_tertiary">#FFFFFF</color>
+    <color name="tg_tertiary_container">#FEF3C7</color>
+    <color name="tg_on_tertiary_container">#451A03</color>
+
+    <color name="tg_error">#B91C1C</color>
+    <color name="tg_on_error">#FFFFFF</color>
+    <color name="tg_error_container">#FEE2E2</color>
+    <color name="tg_on_error_container">#7F1D1D</color>
+
+    <color name="tg_background">#F8FAFC</color>
+    <color name="tg_surface">#FFFFFF</color>
+    <color name="tg_surface_variant">#EEF2F6</color>
+    <color name="tg_on_surface">#0F172A</color>
+    <color name="tg_on_surface_variant">#475569</color>
+    <color name="tg_outline">#CBD5E1</color>
+
+    <color name="tg_map_radius_fill">#261A56DB</color>
+    <color name="tg_map_radius_stroke">#CC1A56DB</color>
+    <color name="tg_map_route_stroke">#1A56DB</color>
+</resources>

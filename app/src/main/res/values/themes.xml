@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.TravelGuard" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/tg_primary</item>
+        <item name="colorOnPrimary">@color/tg_on_primary</item>
+        <item name="colorPrimaryContainer">@color/tg_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/tg_on_primary_container</item>
+
+        <item name="colorSecondary">@color/tg_secondary</item>
+        <item name="colorOnSecondary">@color/tg_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/tg_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/tg_on_secondary_container</item>
+
+        <item name="colorTertiary">@color/tg_tertiary</item>
+        <item name="colorOnTertiary">@color/tg_on_tertiary</item>
+        <item name="colorTertiaryContainer">@color/tg_tertiary_container</item>
+        <item name="colorOnTertiaryContainer">@color/tg_on_tertiary_container</item>
+
+        <item name="colorError">@color/tg_error</item>
+        <item name="colorOnError">@color/tg_on_error</item>
+        <item name="colorErrorContainer">@color/tg_error_container</item>
+        <item name="colorOnErrorContainer">@color/tg_on_error_container</item>
+
+        <item name="android:colorBackground">@color/tg_background</item>
+        <item name="colorSurface">@color/tg_surface</item>
+        <item name="colorSurfaceVariant">@color/tg_surface_variant</item>
+        <item name="colorOnSurface">@color/tg_on_surface</item>
+        <item name="colorOnSurfaceVariant">@color/tg_on_surface_variant</item>
+        <item name="colorOutline">@color/tg_outline</item>
+    </style>
+
+    <style name="Theme.TravelGuard.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/tg_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_brand_logo</item>
+        <item name="postSplashScreenTheme">@style/Theme.TravelGuard</item>
+    </style>
+</resources>
