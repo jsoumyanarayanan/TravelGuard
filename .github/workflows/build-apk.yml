@@ -26,7 +26,7 @@ jobs:
           gradle-version: '8.9'
 
       - name: Extract TravelGuard source
-        run: unzip -q TravelGuard-Android-Source.zip -d source
+        run: unzip -q TravelGuard-Android-Source-Updated.zip -d source
 
       - name: Build debug APK
         run: gradle --no-daemon -p source/TravelGuard assembleDebug
