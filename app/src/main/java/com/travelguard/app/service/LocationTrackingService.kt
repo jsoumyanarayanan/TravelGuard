@@ -39,7 +39,7 @@ class LocationTrackingService : Service(), LocationListener {
     private val geocodingClient = NominatimGeocodingClient()
     private val routingClient = OsrmRoutingClient()
 
-    private val proximityMonitor = DestinationProximityMonitor()
+    private lateinit var proximityMonitor: DestinationProximityMonitor
     private val deviationMonitor = RouteDeviationMonitor()
 
     private var lastReliableSample: LocationSample? = null
@@ -52,25 +52,31 @@ class LocationTrackingService : Service(), LocationListener {
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
         alarmController = AlarmController(this)
         prefs = TravelGuardPreferences(this)
+        proximityMonitor = DestinationProximityMonitor(prefs.getProximityState())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START_JOURNEY -> startJourney()
             ACTION_STOP_JOURNEY -> stopJourney()
-            ACTION_ACKNOWLEDGE_ALARM -> acknowledgeAlarm()
+            ACTION_ACKNOWLEDGE_ALARM -> {
+                if (prefs.getJourneyStatus() == JourneyStatus.ACTIVE) {
+                    startJourney(resumeExisting = true)
+                }
+                acknowledgeAlarm()
+            }
             ACTION_REFRESH_CONFIG -> syncConfigFromStore()
             null -> {
                 // Android may recreate a START_STICKY foreground service with a null intent.
                 // Resume monitoring only when a journey was persisted as active.
-                if (prefs.getJourneyStatus() == JourneyStatus.ACTIVE) startJourney()
+                if (prefs.getJourneyStatus() == JourneyStatus.ACTIVE) startJourney(resumeExisting = true)
                 else stopSelf()
             }
         }
         return START_STICKY
     }
 
-    private fun startJourney() {
+    private fun startJourney(resumeExisting: Boolean = false) {
         val state = JourneyStateStore.uiState.value
         val dest = state.destination
         if (dest == null || !dest.isValid()) {
@@ -84,7 +90,8 @@ class LocationTrackingService : Service(), LocationListener {
             return
         }
 
-        proximityMonitor.resetForNewJourney(state.wakeMeUpEnabled)
+        if (resumeExisting) proximityMonitor.setEnabled(state.wakeMeUpEnabled)
+        else proximityMonitor.resetForNewJourney(state.wakeMeUpEnabled)
         deviationMonitor.setEnabled(state.routeGuardEnabled, state.routeData != null)
         prefs.saveJourneyRuntimeState(JourneyStatus.ACTIVE, proximityMonitor.state)
 
@@ -121,6 +128,13 @@ class LocationTrackingService : Service(), LocationListener {
 
         if (best != null) {
             onLocationChanged(best)
+            if (proximityMonitor.state == ProximityAlarmState.TRIGGERED) {
+                val savedDestination = JourneyStateStore.uiState.value.destination
+                if (savedDestination != null) {
+                    val distance = GeoMath.distanceMeters(best.latitude, best.longitude, savedDestination.latitude, savedDestination.longitude)
+                    alarmController.triggerWakeAlarm(savedDestination.name, distance)
+                }
+            }
             val state = JourneyStateStore.uiState.value
             val dest = state.destination ?: return
             // Refresh the route at journey start. A cached route may have an old origin
@@ -350,6 +364,7 @@ class LocationTrackingService : Service(), LocationListener {
     }
 
     override fun onDestroy() {
+        runCatching { alarmController.stopWakeAlarm() }
         serviceScope.cancel()
         runCatching { locationManager.removeUpdates(this) }
         super.onDestroy()
