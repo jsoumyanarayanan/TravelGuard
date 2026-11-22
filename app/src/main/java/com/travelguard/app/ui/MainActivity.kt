@@ -767,13 +767,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun getFilter(): Filter = object : Filter() {
-            override fun performFiltering(constraint: CharSequence?): FilterResults =
-                FilterResults().apply {
+            override fun performFiltering(constraint: CharSequence?): Filter.FilterResults =
+                Filter.FilterResults().apply {
                     values = allSuggestions.toList()
                     count = allSuggestions.size
                 }
 
-            override fun publishResults(constraint: CharSequence?, results: FilterResults?) {
+            override fun publishResults(constraint: CharSequence?, results: Filter.FilterResults?) {
                 notifyDataSetChanged()
             }
         }
