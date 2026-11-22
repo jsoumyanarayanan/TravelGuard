@@ -35,10 +35,31 @@ jobs:
         with:
           gradle-version: "8.7"
 
+      - name: Prepare permanent Android signing key
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing GitHub Actions secret: $name"
+              exit 1
+            fi
+          done
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/travelguard-release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/travelguard-release.jks" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+
       - name: Run unit tests
         run: gradle --no-daemon testDebugUnitTest
 
-      - name: Build test APK
+      - name: Build permanently signed APK
         shell: bash
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
@@ -56,13 +77,13 @@ jobs:
           fi
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
           VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH))
-          gradle --no-daemon assembleDebug \
+          gradle --no-daemon assembleRelease \
             -PappVersionName="$VERSION" \
             -PappVersionCode="$VERSION_CODE"
-          cp app/build/outputs/apk/debug/app-debug.apk TravelGuard.apk
+          cp app/build/outputs/apk/release/app-release.apk TravelGuard.apk
           echo "TRAVELGUARD_VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Publish GitHub Release with test APK
+      - name: Publish GitHub Release with signed APK
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.TRAVELGUARD_VERSION }}
