@@ -60,6 +60,12 @@ class LocationTrackingService : Service(), LocationListener {
             ACTION_STOP_JOURNEY -> stopJourney()
             ACTION_ACKNOWLEDGE_ALARM -> acknowledgeAlarm()
             ACTION_REFRESH_CONFIG -> syncConfigFromStore()
+            null -> {
+                // Android may recreate a START_STICKY foreground service with a null intent.
+                // Resume monitoring only when a journey was persisted as active.
+                if (prefs.getJourneyStatus() == JourneyStatus.ACTIVE) startJourney()
+                else stopSelf()
+            }
         }
         return START_STICKY
     }
