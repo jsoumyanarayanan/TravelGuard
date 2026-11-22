@@ -22,6 +22,16 @@ class GeoMathTest {
     }
 
     @Test
+    fun isFreshLocation_rejectsOldFutureAndInvalidTimestamps() {
+        val now = 10_000_000L
+        assertTrue(GeoMath.isFreshLocation(now - 60_000L, now))
+        assertTrue(GeoMath.isFreshLocation(now - 1_000L, now))
+        assertFalse(GeoMath.isFreshLocation(now - 60_001L, now))
+        assertFalse(GeoMath.isFreshLocation(now + 1L, now))
+        assertFalse(GeoMath.isFreshLocation(0L, now))
+    }
+
+    @Test
     fun isSampleReliable_rejectsLowAccuracyAndImplausibleJump() {
         val prev = LocationSample(13.0827, 80.2750, 15f, 10f, 0f, 1_000_000L)
         val poorAccuracy = LocationSample(13.0830, 80.2752, 300f, 10f, 0f, 1_005_000L)
