@@ -15,6 +15,9 @@ import com.travelguard.app.TravelGuardApp
 import com.travelguard.app.data.local.TravelGuardPreferences
 import com.travelguard.app.databinding.ActivitySettingsBinding
 import com.travelguard.app.domain.model.ThemePreference
+import com.travelguard.app.data.JourneyStateStore
+import com.travelguard.app.domain.model.JourneyStatus
+import androidx.lifecycle.lifecycleScope
 import com.travelguard.app.update.GithubUpdateManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -171,6 +174,10 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun installUpdate() {
+        if (JourneyStateStore.uiState.value.journeyStatus == JourneyStatus.ACTIVE) {
+            binding.tvUpdateStatus.text = "End the active journey before installing an update. The download can wait until your journey is complete."
+            return
+        }
         if (activeDownloadId < 0L) return
         when (val result = GithubUpdateManager.installDownloaded(this, activeDownloadId)) {
             GithubUpdateManager.InstallResult.Started -> {
