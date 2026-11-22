@@ -376,6 +376,10 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnOpenGoogleMaps.setOnClickListener {
             val state = JourneyStateStore.uiState.value
+            if (state.currentLocation == null || state.isLocationStale) {
+                Toast.makeText(this, "Waiting for a fresh GPS location before opening directions.", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             when (val res = GoogleMapsDirectionsLauncher.openDirections(this, state.currentLocation, state.destination)) {
                 is GoogleMapsDirectionsLauncher.LaunchResult.Failed -> {
                     Toast.makeText(this, res.reason, Toast.LENGTH_LONG).show()
@@ -497,6 +501,19 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    delay(15_000)
+                    val sample = JourneyStateStore.uiState.value.currentLocation
+                    val stale = sample == null ||
+                        System.currentTimeMillis() - sample.timestampMillis > 60_000L
+                    if (JourneyStateStore.uiState.value.isLocationStale != stale) {
+                        JourneyStateStore.update { it.copy(isLocationStale = stale) }
+                    }
+                }
+            }
+        }
     }
 
     private fun renderState(state: JourneyUiState) {
@@ -555,7 +572,8 @@ class MainActivity : AppCompatActivity() {
         binding.etSearchDestination.isEnabled = destinationEditable
         binding.btnSearchDestination.isEnabled = destinationEditable
         binding.btnClearDestination.isEnabled = destinationEditable
-        binding.btnOpenGoogleMaps.isEnabled = state.destination != null && state.destination.isValid()
+        binding.btnOpenGoogleMaps.isEnabled = state.destination != null &&
+            state.destination.isValid() && state.currentLocation != null && !state.isLocationStale
 
         // Metrics
         val distMeters = state.remainingDistanceMeters
@@ -588,7 +606,7 @@ class MainActivity : AppCompatActivity() {
         val loc = state.currentLocation
         binding.tvGpsAge.text = if (loc != null) {
             val ageSec = ((System.currentTimeMillis() - loc.timestampMillis) / 1000L).coerceAtLeast(0L)
-            val staleNote = if (ageSec > 60) " (Stale)" else ""
+            val staleNote = if (state.isLocationStale || ageSec > 60) " (Stale — waiting for GPS)" else ""
             "GPS: ±${loc.accuracyMeters.toInt()}m • ${ageSec}s ago$staleNote"
         } else {
             "GPS status: No fix yet"
