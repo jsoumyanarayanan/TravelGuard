@@ -30,9 +30,13 @@ class PackageReplacedReceiver : BroadcastReceiver() {
         ) == PackageManager.PERMISSION_GRANTED
         if (!hasFine && !hasCoarse) return
 
-        ContextCompat.startForegroundService(
-            context,
-            Intent(context, LocationTrackingService::class.java)
-        )
+        context.getSharedPreferences("travelguard_recovery", Context.MODE_PRIVATE)
+            .edit().putBoolean("journey_resume_pending", true).apply()
+        runCatching {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, LocationTrackingService::class.java)
+            )
+        }
     }
 }
