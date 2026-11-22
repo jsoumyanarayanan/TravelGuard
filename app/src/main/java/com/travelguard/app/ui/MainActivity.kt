@@ -268,13 +268,16 @@ class MainActivity : AppCompatActivity() {
             suggestionJob?.cancel()
             suggestionRequestId++
 
-            // AutoCompleteTextView applies the clicked adapter text after this callback.
-            // Defer committing the actual Destination until that automatic text update
-            // has completed, otherwise TextWatcher can clear the selected coordinates.
+            // AutoCompleteTextView writes the clicked label after this callback.
+            // Suppress TextWatcher immediately so that this automatic replacement is
+            // never mistaken for fresh user typing or allowed to clear the destination.
+            isApplyingDestinationText = true
             binding.etSearchDestination.post {
-                isApplyingDestinationText = true
-                binding.etSearchDestination.setText(selected.name, false)
-                isApplyingDestinationText = false
+                try {
+                    binding.etSearchDestination.setText(selected.name, false)
+                } finally {
+                    isApplyingDestinationText = false
+                }
                 applySelectedDestination(selected)
             }
         }
