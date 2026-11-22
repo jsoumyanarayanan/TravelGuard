@@ -27,6 +27,19 @@ object GeoMath {
 
     fun kmToMeters(km: Float): Double = km.toDouble() * 1000.0
 
+    /**
+     * Last-known Android locations are useful only when they are recent. A stale cached
+     * fix must not seed a new journey's route or trigger a destination alarm.
+     */
+    fun isFreshLocation(
+        timestampMillis: Long,
+        nowMillis: Long = System.currentTimeMillis(),
+        maxAgeMillis: Long = 60_000L
+    ): Boolean {
+        if (timestampMillis <= 0L || maxAgeMillis < 0L || nowMillis < timestampMillis) return false
+        return nowMillis - timestampMillis <= maxAgeMillis
+    }
+
     fun isSampleReliable(previous: LocationSample?, candidate: LocationSample): Boolean {
         if (candidate.latitude !in -90.0..90.0 || candidate.longitude !in -180.0..180.0) {
             return false
