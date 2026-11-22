@@ -219,6 +219,21 @@ class MainActivity : AppCompatActivity() {
                 if (JourneyStateStore.uiState.value.journeyStatus == JourneyStatus.ACTIVE) return
 
                 val query = s?.toString()?.trim().orEmpty()
+
+                // AutoCompleteTextView replaces the field with the clicked adapter label
+                // BEFORE invoking OnItemClickListener. Do not treat that replacement as
+                // fresh typing: doing so clears suggestionDestinations before the click
+                // listener can retrieve the selected coordinates.
+                val isAdapterCompletion = suggestionDestinations.any { destination ->
+                    val label = if (destination.address.isBlank() || destination.address == destination.name) {
+                        destination.name
+                    } else {
+                        "${destination.name} — ${destination.address}"
+                    }
+                    query == label
+                }
+                if (isAdapterCompletion) return
+
                 suggestionJob?.cancel()
                 suggestionRequestId++
                 val requestId = suggestionRequestId
