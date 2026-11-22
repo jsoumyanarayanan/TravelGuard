@@ -62,8 +62,9 @@ object JourneyStateStore {
 
     fun setDestination(context: Context, destination: Destination?) {
         val previous = _uiState.value.destination
-        val destinationChanged = previous?.latitude != destination?.latitude ||
-            previous?.longitude != destination?.longitude
+        val destinationChanged = destination == null ||
+            previous?.latitude != destination.latitude ||
+            previous?.longitude != destination.longitude
         TravelGuardPreferences(context).saveDestination(destination)
         if (destinationChanged) {
             // Never retain a route calculated for a different destination.
