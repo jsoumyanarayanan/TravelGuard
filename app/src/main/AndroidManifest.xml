@@ -33,6 +33,19 @@
         </activity>
 
         <activity
+            android:name=".assist.MorningReminderActivity"
+            android:exported="false"
+            android:theme="@style/Theme.TravelGuard" />
+
+        <receiver
+            android:name=".assist.MorningReminderReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".assist.OvernightPromptDismissReceiver"
+            android:exported="false" />
+
+        <activity
             android:name=".ui.SettingsActivity"
             android:exported="false"
             android:parentActivityName=".ui.MainActivity"
