@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import com.travelguard.app.assist.OvernightTravelAssist
 import com.travelguard.app.alarm.AlarmController
 import com.travelguard.app.data.JourneyStateStore
 import com.travelguard.app.data.local.TravelGuardPreferences
@@ -93,7 +94,10 @@ class LocationTrackingService : Service(), LocationListener {
         }
 
         if (resumeExisting) proximityMonitor.setEnabled(state.wakeMeUpEnabled)
-        else proximityMonitor.resetForNewJourney(state.wakeMeUpEnabled)
+        else {
+            proximityMonitor.resetForNewJourney(state.wakeMeUpEnabled)
+            OvernightTravelAssist.resetForNewJourney(this)
+        }
 
         // A cached route belongs to an earlier GPS origin. Never monitor against it
         // as though it were the route for this journey; rebuild from a fresh fix.
@@ -279,6 +283,10 @@ class LocationTrackingService : Service(), LocationListener {
         lastReliableSample = sample
 
         val state = JourneyStateStore.uiState.value
+        OvernightTravelAssist.recordLocation(
+            this, sample.latitude, sample.longitude, sample.accuracyMeters,
+            sample.timestampMillis, state.journeyStatus == JourneyStatus.ACTIVE
+        )
         val dest = state.destination ?: return
         if (state.routeData == null) {
             requestRoute(sample.latitude, sample.longitude, dest)
