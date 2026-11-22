@@ -109,7 +109,7 @@
                             android:layout_weight="1"
                             android:hint="@string/search_hint">
 
-                            <com.google.android.material.textfield.TextInputEditText
+                            <com.google.android.material.textfield.MaterialAutoCompleteTextView
                                 android:id="@+id/etSearchDestination"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
