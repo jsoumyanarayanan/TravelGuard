@@ -34,6 +34,8 @@ import com.travelguard.app.domain.model.ProximityAlarmState
 import com.travelguard.app.domain.model.RouteMonitoringState
 import com.travelguard.app.navigation.GoogleMapsDirectionsLauncher
 import com.travelguard.app.service.LocationTrackingService
+import com.travelguard.app.BuildConfig
+import com.travelguard.app.update.GithubUpdateManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -107,6 +109,25 @@ class MainActivity : AppCompatActivity() {
         setupMap()
         setupControls()
         observeState()
+        checkForAppUpdate()
+    }
+
+
+    private fun checkForAppUpdate() {
+        if (JourneyStateStore.uiState.value.journeyStatus == JourneyStatus.ACTIVE) return
+        lifecycleScope.launch {
+            val result = GithubUpdateManager.checkForUpdate(BuildConfig.VERSION_NAME)
+            if (result is GithubUpdateManager.CheckResult.Available && !isFinishing && !isDestroyed) {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("TravelGuard update available")
+                    .setMessage("Version v${result.update.versionName} is available. Open Settings to download and install it in the background.")
+                    .setPositiveButton("Open Settings") { _, _ ->
+                        startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+                    }
+                    .setNegativeButton("Later", null)
+                    .show()
+            }
+        }
     }
 
     private fun setupMap() {
