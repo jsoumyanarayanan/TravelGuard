@@ -39,6 +39,7 @@ class SettingsActivity : AppCompatActivity() {
         prefs = TravelGuardPreferences(this)
         binding.tvInstalledVersion.text = "Installed version v${BuildConfig.VERSION_NAME}"
         binding.progressUpdateDownload.max = 100
+        activeDownloadId = getSharedPreferences("travelguard_updates", MODE_PRIVATE).getLong("download_id", -1L)
 
         binding.btnCheckForUpdates.setOnClickListener { checkForUpdates() }
         binding.btnDownloadUpdate.setOnClickListener { downloadUpdate() }
@@ -86,6 +87,7 @@ class SettingsActivity : AppCompatActivity() {
 
         updatePermissionSummary()
         checkForUpdates()
+        resumeDownloadIfAny()
     }
 
     override fun onResume() {
@@ -131,46 +133,87 @@ class SettingsActivity : AppCompatActivity() {
         val update = availableUpdate ?: return
         try {
             activeDownloadId = GithubUpdateManager.enqueueDownload(this, update)
+            getSharedPreferences("travelguard_updates", MODE_PRIVATE).edit()
+                .putLong("download_id", activeDownloadId)
+                .apply()
             binding.btnDownloadUpdate.isEnabled = false
             binding.btnDownloadUpdate.visibility = android.view.View.GONE
             binding.btnInstallUpdate.visibility = android.view.View.GONE
             binding.progressUpdateDownload.visibility = android.view.View.VISIBLE
             binding.progressUpdateDownload.progress = 0
             binding.tvUpdateStatus.text = "Download started. You can continue using TravelGuard."
-            downloadProgressJob?.cancel()
-            downloadProgressJob = lifecycleScope.launch {
-                while (true) {
-                    delay(500)
-                    val progress = GithubUpdateManager.getDownloadProgress(this@SettingsActivity, activeDownloadId)
-                    if (progress == null) {
-                        binding.tvUpdateStatus.text = "Download status unavailable. Please try again."
-                        break
-                    }
-                    binding.progressUpdateDownload.progress = progress.percent
-                    when (progress.status) {
-                        DownloadManager.STATUS_PENDING -> binding.tvUpdateStatus.text = "Update queued..."
-                        DownloadManager.STATUS_RUNNING -> binding.tvUpdateStatus.text = "Downloading update... ${progress.percent}%"
-                        DownloadManager.STATUS_PAUSED -> binding.tvUpdateStatus.text = "Download paused. Waiting for network..."
-                        DownloadManager.STATUS_SUCCESSFUL -> {
-                            binding.progressUpdateDownload.progress = 100
-                            binding.tvUpdateStatus.text = "Update downloaded. Tap Install when ready."
-                            binding.btnInstallUpdate.visibility = android.view.View.VISIBLE
-                            break
-                        }
-                        DownloadManager.STATUS_FAILED -> {
-                            binding.tvUpdateStatus.text = progress.reason ?: "Download failed. Please try again."
-                            binding.btnDownloadUpdate.visibility = android.view.View.VISIBLE
-                            binding.btnDownloadUpdate.isEnabled = true
-                            break
-                        }
-                    }
-                }
-            }
+            monitorDownload()
         } catch (error: Exception) {
             binding.tvUpdateStatus.text = error.localizedMessage ?: "Unable to start the update download."
             binding.btnDownloadUpdate.isEnabled = true
             binding.btnDownloadUpdate.visibility = android.view.View.VISIBLE
         }
+    }
+
+    private fun resumeDownloadIfAny() {
+        if (activeDownloadId < 0L) return
+        val progress = GithubUpdateManager.getDownloadProgress(this, activeDownloadId)
+        if (progress == null) {
+            clearSavedDownload()
+            return
+        }
+        binding.progressUpdateDownload.visibility = android.view.View.VISIBLE
+        binding.progressUpdateDownload.progress = progress.percent
+        when (progress.status) {
+            DownloadManager.STATUS_SUCCESSFUL -> {
+                binding.progressUpdateDownload.progress = 100
+                binding.tvUpdateStatus.text = "Update downloaded. Tap Install when ready."
+                binding.btnInstallUpdate.visibility = android.view.View.VISIBLE
+            }
+            DownloadManager.STATUS_FAILED -> {
+                binding.tvUpdateStatus.text = progress.reason ?: "Download failed. Please try again."
+                clearSavedDownload()
+                binding.btnDownloadUpdate.visibility = android.view.View.VISIBLE
+                binding.btnDownloadUpdate.isEnabled = true
+            }
+            else -> monitorDownload()
+        }
+    }
+
+    private fun monitorDownload() {
+        downloadProgressJob?.cancel()
+        downloadProgressJob = lifecycleScope.launch {
+            while (true) {
+                delay(500)
+                val progress = GithubUpdateManager.getDownloadProgress(this@SettingsActivity, activeDownloadId)
+                if (progress == null) {
+                    binding.tvUpdateStatus.text = "Download status unavailable. Please check for updates again."
+                    clearSavedDownload()
+                    break
+                }
+                binding.progressUpdateDownload.progress = progress.percent
+                when (progress.status) {
+                    DownloadManager.STATUS_PENDING -> binding.tvUpdateStatus.text = "Update queued..."
+                    DownloadManager.STATUS_RUNNING -> binding.tvUpdateStatus.text = "Downloading update... ${progress.percent}%"
+                    DownloadManager.STATUS_PAUSED -> binding.tvUpdateStatus.text = "Download paused. Waiting for network..."
+                    DownloadManager.STATUS_SUCCESSFUL -> {
+                        binding.progressUpdateDownload.progress = 100
+                        binding.tvUpdateStatus.text = "Update downloaded. Tap Install when ready."
+                        binding.btnInstallUpdate.visibility = android.view.View.VISIBLE
+                        break
+                    }
+                    DownloadManager.STATUS_FAILED -> {
+                        binding.tvUpdateStatus.text = progress.reason ?: "Download failed. Please try again."
+                        clearSavedDownload()
+                        binding.btnDownloadUpdate.visibility = android.view.View.VISIBLE
+                        binding.btnDownloadUpdate.isEnabled = true
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    private fun clearSavedDownload() {
+        getSharedPreferences("travelguard_updates", MODE_PRIVATE).edit()
+            .remove("download_id")
+            .apply()
+        activeDownloadId = -1L
     }
 
     private fun installUpdate() {
