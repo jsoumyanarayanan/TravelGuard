@@ -45,6 +45,8 @@ class LocationTrackingService : Service(), LocationListener {
     private var lastReliableSample: LocationSample? = null
     private var lastLocalityLookupTime = 0L
     private var isHighPrecisionInterval = false
+    private var routeFetchInFlight = false
+    private var lastRouteFetchAttemptMillis = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -92,7 +94,13 @@ class LocationTrackingService : Service(), LocationListener {
 
         if (resumeExisting) proximityMonitor.setEnabled(state.wakeMeUpEnabled)
         else proximityMonitor.resetForNewJourney(state.wakeMeUpEnabled)
-        deviationMonitor.setEnabled(state.routeGuardEnabled, state.routeData != null)
+
+        // A cached route belongs to an earlier GPS origin. Never monitor against it
+        // as though it were the route for this journey; rebuild from a fresh fix.
+        routeFetchInFlight = false
+        lastRouteFetchAttemptMillis = 0L
+        JourneyStateStore.setRouteData(this, null)
+        deviationMonitor.setEnabled(state.routeGuardEnabled, false)
         prefs.saveJourneyRuntimeState(JourneyStatus.ACTIVE, proximityMonitor.state)
 
         JourneyStateStore.update {
@@ -135,26 +143,44 @@ class LocationTrackingService : Service(), LocationListener {
                     alarmController.triggerWakeAlarm(savedDestination.name, distance)
                 }
             }
-            val state = JourneyStateStore.uiState.value
-            val dest = state.destination ?: return
-            // Refresh the route at journey start. A cached route may have an old origin
-            // even when the destination has not changed since the previous journey.
-            serviceScope.launch {
-                when (val result = routingClient.fetchRoute(best.latitude, best.longitude, dest.latitude, dest.longitude)) {
+            val dest = JourneyStateStore.uiState.value.destination ?: return
+            requestRoute(best.latitude, best.longitude, dest)
+        }
+    }
+
+    /**
+     * Fetches a route from the first fresh GPS origin. This also covers devices that
+     * have no last-known location when the journey starts. Failed requests are retried
+     * no more than once per minute as new GPS samples arrive.
+     */
+    private fun requestRoute(originLat: Double, originLon: Double, destination: com.travelguard.app.domain.model.Destination) {
+        val now = System.currentTimeMillis()
+        if (routeFetchInFlight || now - lastRouteFetchAttemptMillis < ROUTE_RETRY_INTERVAL_MS) return
+
+        routeFetchInFlight = true
+        lastRouteFetchAttemptMillis = now
+        serviceScope.launch {
+            try {
+                when (val result = routingClient.fetchRoute(
+                    originLat, originLon, destination.latitude, destination.longitude
+                )) {
                     is OsrmRoutingClient.RouteResult.Success -> {
                         JourneyStateStore.setRouteData(this@LocationTrackingService, result.route)
                         deviationMonitor.markRouteLoaded()
                     }
                     is OsrmRoutingClient.RouteResult.Unavailable -> {
-                        if (state.routeData == null) deviationMonitor.markRouteUnavailable()
+                        deviationMonitor.markRouteUnavailable()
+                        JourneyStateStore.setRouteData(this@LocationTrackingService, null)
                         JourneyStateStore.update {
                             it.copy(
-                                routeMonitoringState = if (it.routeGuardEnabled) deviationMonitor.state else RouteMonitoringState.DISABLED,
+                                routeMonitoringState = if (it.routeGuardEnabled) RouteMonitoringState.UNAVAILABLE else RouteMonitoringState.DISABLED,
                                 warningMessage = result.reason
                             )
                         }
                     }
                 }
+            } finally {
+                routeFetchInFlight = false
             }
         }
     }
@@ -254,6 +280,9 @@ class LocationTrackingService : Service(), LocationListener {
 
         val state = JourneyStateStore.uiState.value
         val dest = state.destination ?: return
+        if (state.routeData == null) {
+            requestRoute(sample.latitude, sample.longitude, dest)
+        }
         val directDistance = GeoMath.distanceMeters(sample.latitude, sample.longitude, dest.latitude, dest.longitude)
 
         // Adaptive GPS sampling: tighten when within 2x wake radius
@@ -377,5 +406,6 @@ class LocationTrackingService : Service(), LocationListener {
         const val ACTION_STOP_JOURNEY = "com.travelguard.action.STOP_JOURNEY"
         const val ACTION_ACKNOWLEDGE_ALARM = "com.travelguard.action.ACK_ALARM"
         const val ACTION_REFRESH_CONFIG = "com.travelguard.action.REFRESH_CONFIG"
+        private const val ROUTE_RETRY_INTERVAL_MS = 60_000L
     }
 }
