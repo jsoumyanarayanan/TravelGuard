@@ -134,17 +134,17 @@ class LocationTrackingService : Service(), LocationListener {
         val lastNet = runCatching { locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER) }.getOrNull()
         val best = listOfNotNull(lastGps, lastNet).maxByOrNull { it.time }
 
-        if (best != null) {
+        // Android's last-known location can be hours old. Do not use it as the
+        // journey origin; wait for a fresh provider update instead.
+        if (best != null && GeoMath.isFreshLocation(best.time)) {
             onLocationChanged(best)
             if (proximityMonitor.state == ProximityAlarmState.TRIGGERED) {
                 val savedDestination = JourneyStateStore.uiState.value.destination
                 if (savedDestination != null) {
                     val distance = GeoMath.distanceMeters(best.latitude, best.longitude, savedDestination.latitude, savedDestination.longitude)
-                    alarmController.triggerWakeAlarm(savedDestination.name, distance)
+                    alarmController.ensureWakeAlarm(savedDestination.name, distance)
                 }
             }
-            val dest = JourneyStateStore.uiState.value.destination ?: return
-            requestRoute(best.latitude, best.longitude, dest)
         }
     }
 
@@ -305,6 +305,10 @@ class LocationTrackingService : Service(), LocationListener {
                 "Wake Me Up",
                 "Entered ${String.format("%.1f", state.wakeRadiusKm)} km radius of ${dest.name}."
             )
+        } else if (proximityMonitor.state == ProximityAlarmState.TRIGGERED) {
+            // If Android recreated the service after process death, restore the alarm
+            // on the first fresh fix even though the state machine is already TRIGGERED.
+            alarmController.ensureWakeAlarm(dest.name, directDistance)
         }
 
         // Evaluate Route Guard
