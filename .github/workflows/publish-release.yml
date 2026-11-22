@@ -1,9 +1,15 @@
-name: Publish TravelGuard update release
+name: Publish TravelGuard test APK
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "App version to publish (for example 1.0.0)"
+        required: true
+        default: "1.0.0"
 
 permissions:
   contents: write
@@ -14,18 +20,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Validate release signing secrets
-        env:
-          SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          test -n "$SIGNING_KEY" || (echo "::error::Missing ANDROID_SIGNING_KEY_BASE64 repository secret"; exit 1)
-          test -n "$KEYSTORE_PASSWORD" || (echo "::error::Missing ANDROID_KEYSTORE_PASSWORD repository secret"; exit 1)
-          test -n "$KEY_ALIAS" || (echo "::error::Missing ANDROID_KEY_ALIAS repository secret"; exit 1)
-          test -n "$KEY_PASSWORD" || (echo "::error::Missing ANDROID_KEY_PASSWORD repository secret"; exit 1)
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -41,30 +35,32 @@ jobs:
       - name: Run unit tests
         run: gradle --no-daemon testDebugUnitTest
 
-      - name: Prepare release signing key
-        env:
-          SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
+      - name: Build test APK
+        shell: bash
         run: |
-          echo "$SIGNING_KEY" | base64 --decode > "$RUNNER_TEMP/travelguard-release.jks"
-          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/travelguard-release.jks" >> "$GITHUB_ENV"
-
-      - name: Build signed release APK
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must use MAJOR.MINOR.PATCH format."
+            exit 1
+          fi
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
           VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH))
-          gradle --no-daemon assembleRelease \
+          gradle --no-daemon assembleDebug \
             -PappVersionName="$VERSION" \
             -PappVersionCode="$VERSION_CODE"
-          cp app/build/outputs/apk/release/app-release.apk TravelGuard.apk
+          cp app/build/outputs/apk/debug/app-debug.apk TravelGuard.apk
+          echo "TRAVELGUARD_VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Publish GitHub Release with APK
+      - name: Publish GitHub Release with test APK
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.TRAVELGUARD_VERSION }}
+          name: TravelGuard v${{ env.TRAVELGUARD_VERSION }} (testing)
           generate_release_notes: true
           files: TravelGuard.apk
           fail_on_unmatched_files: true
+          make_latest: true
