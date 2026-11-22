@@ -750,7 +750,22 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         binding.mapView.onResume()
+        resumeJourneyAfterUpdateIfNeeded()
         checkForAppUpdate()
+    }
+
+    private fun resumeJourneyAfterUpdateIfNeeded() {
+        val recoveryPrefs = getSharedPreferences("travelguard_recovery", MODE_PRIVATE)
+        if (!recoveryPrefs.getBoolean("journey_resume_pending", false)) return
+        val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasFine && !hasCoarse) return
+        runCatching {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, LocationTrackingService::class.java)
+            )
+        }
     }
 
     private class UnfilteredSuggestionAdapter(context: android.content.Context) :
