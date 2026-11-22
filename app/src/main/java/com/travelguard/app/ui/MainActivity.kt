@@ -10,6 +10,7 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.Toast
 import android.widget.ArrayAdapter
+import android.widget.Filter
 import android.text.Editable
 import android.text.TextWatcher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -67,6 +68,8 @@ class MainActivity : AppCompatActivity() {
     private var suggestionJob: Job? = null
     private var suggestionRequestId = 0L
     private var suggestionDestinations: List<Destination> = emptyList()
+    private var updateCheckJob: Job? = null
+    private var isUpdatePromptVisible = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -109,23 +112,34 @@ class MainActivity : AppCompatActivity() {
         setupMap()
         setupControls()
         observeState()
-        checkForAppUpdate()
     }
 
 
     private fun checkForAppUpdate() {
-        if (JourneyStateStore.uiState.value.journeyStatus == JourneyStatus.ACTIVE) return
-        lifecycleScope.launch {
-            val result = GithubUpdateManager.checkForUpdate(BuildConfig.VERSION_NAME)
-            if (result is GithubUpdateManager.CheckResult.Available && !isFinishing && !isDestroyed) {
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("TravelGuard update available")
-                    .setMessage("Version v${result.update.versionName} is available. Open Settings to download and install it in the background.")
-                    .setPositiveButton("Open Settings") { _, _ ->
-                        startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
-                    }
-                    .setNegativeButton("Later", null)
-                    .show()
+        if (isFinishing || isDestroyed || isUpdatePromptVisible) return
+        updateCheckJob?.cancel()
+        updateCheckJob = lifecycleScope.launch {
+            when (val result = GithubUpdateManager.checkForUpdate(BuildConfig.VERSION_NAME)) {
+                is GithubUpdateManager.CheckResult.Available -> {
+                    if (isFinishing || isDestroyed || isUpdatePromptVisible) return@launch
+                    isUpdatePromptVisible = true
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("TravelGuard update required")
+                        .setMessage(
+                            "Version v${result.update.versionName} is ready. Update TravelGuard to continue with the latest safety features. Your saved destination and settings will be retained."
+                        )
+                        .setCancelable(false)
+                        .setPositiveButton("Download & update") { _, _ ->
+                            isUpdatePromptVisible = false
+                            startActivity(
+                                Intent(this@MainActivity, SettingsActivity::class.java)
+                                    .putExtra(SettingsActivity.EXTRA_FORCE_UPDATE, true)
+                            )
+                        }
+                        .show()
+                }
+                is GithubUpdateManager.CheckResult.UpToDate,
+                is GithubUpdateManager.CheckResult.Failed -> Unit
             }
         }
     }
@@ -196,9 +210,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnSearchDestination.setOnClickListener { performDestinationSearch() }
         binding.etSearchDestination.threshold = 3
-        binding.etSearchDestination.setAdapter(
-            ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, mutableListOf<String>())
-        )
+        binding.etSearchDestination.setAdapter(UnfilteredSuggestionAdapter(this))
         binding.etSearchDestination.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
 
@@ -211,7 +223,7 @@ class MainActivity : AppCompatActivity() {
                 suggestionRequestId++
                 val requestId = suggestionRequestId
                 suggestionDestinations = emptyList()
-                (binding.etSearchDestination.adapter as? ArrayAdapter<String>)?.clear()
+                (binding.etSearchDestination.adapter as? UnfilteredSuggestionAdapter)?.replaceSuggestions(emptyList())
 
                 // A typed query is not a confirmed destination. Remove stale coordinates immediately.
                 if (JourneyStateStore.uiState.value.destination != null) {
@@ -235,10 +247,8 @@ class MainActivity : AppCompatActivity() {
                                 if (it.address.isBlank() || it.address == it.name) it.name
                                 else "${it.name} — ${it.address}"
                             }
-                            val adapter = binding.etSearchDestination.adapter as ArrayAdapter<String>
-                            adapter.clear()
-                            adapter.addAll(labels)
-                            adapter.notifyDataSetChanged()
+                            val adapter = binding.etSearchDestination.adapter as UnfilteredSuggestionAdapter
+                            adapter.replaceSuggestions(labels)
                             if (labels.isNotEmpty()) binding.etSearchDestination.showDropDown()
                             else binding.etSearchDestination.dismissDropDown()
                         }
@@ -415,24 +425,32 @@ class MainActivity : AppCompatActivity() {
         }
         suggestionJob?.cancel()
         suggestionRequestId++
+        val requestId = suggestionRequestId
         val query = binding.etSearchDestination.text?.toString().orEmpty().trim()
-        if (query.isEmpty()) return
+        if (query.length < 3) {
+            Toast.makeText(this, "Type at least 3 characters to search.", Toast.LENGTH_SHORT).show()
+            return
+        }
 
         lifecycleScope.launch {
             when (val result = geocodingClient.search(query)) {
                 is NominatimGeocodingClient.SearchResult.Success -> {
-                    if (result.destinations.isEmpty()) {
-                        Toast.makeText(this@MainActivity, "No matching places found.", Toast.LENGTH_SHORT).show()
-                    } else if (result.destinations.size == 1) {
-                        applySelectedDestination(result.destinations[0])
+                    if (requestId != suggestionRequestId ||
+                        binding.etSearchDestination.text?.toString()?.trim() != query
+                    ) return@launch
+                    suggestionDestinations = result.destinations
+                    val labels = result.destinations.map {
+                        if (it.address.isBlank() || it.address == it.name) it.name
+                        else "${it.name} — ${it.address}"
+                    }
+                    (binding.etSearchDestination.adapter as UnfilteredSuggestionAdapter)
+                        .replaceSuggestions(labels)
+                    if (labels.isNotEmpty()) {
+                        binding.etSearchDestination.requestFocus()
+                        binding.etSearchDestination.showDropDown()
                     } else {
-                        val labels = result.destinations.map { "${it.name}\n${it.address}" }.toTypedArray()
-                        AlertDialog.Builder(this@MainActivity)
-                            .setTitle("Select destination")
-                            .setItems(labels) { _, which ->
-                                applySelectedDestination(result.destinations[which])
-                            }
-                            .show()
+                        binding.etSearchDestination.dismissDropDown()
+                        Toast.makeText(this@MainActivity, "No matching places found.", Toast.LENGTH_SHORT).show()
                     }
                 }
                 is NominatimGeocodingClient.SearchResult.Error -> {
@@ -732,6 +750,33 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         binding.mapView.onResume()
+        checkForAppUpdate()
+    }
+
+    private class UnfilteredSuggestionAdapter(context: android.content.Context) :
+        ArrayAdapter<String>(context, android.R.layout.simple_dropdown_item_1line) {
+
+        private val allSuggestions = mutableListOf<String>()
+
+        fun replaceSuggestions(items: List<String>) {
+            allSuggestions.clear()
+            allSuggestions.addAll(items)
+            clear()
+            addAll(items)
+            notifyDataSetChanged()
+        }
+
+        override fun getFilter(): Filter = object : Filter() {
+            override fun performFiltering(constraint: CharSequence?): FilterResults =
+                FilterResults().apply {
+                    values = allSuggestions.toList()
+                    count = allSuggestions.size
+                }
+
+            override fun publishResults(constraint: CharSequence?, results: FilterResults?) {
+                notifyDataSetChanged()
+            }
+        }
     }
 
     override fun onPause() {
