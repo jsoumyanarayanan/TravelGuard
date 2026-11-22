@@ -265,12 +265,18 @@ class MainActivity : AppCompatActivity() {
         })
         binding.etSearchDestination.setOnItemClickListener { _, _, position, _ ->
             val selected = suggestionDestinations.getOrNull(position) ?: return@setOnItemClickListener
-            isApplyingDestinationText = true
-            binding.etSearchDestination.setText(selected.name, false)
-            isApplyingDestinationText = false
             suggestionJob?.cancel()
             suggestionRequestId++
-            applySelectedDestination(selected)
+
+            // AutoCompleteTextView applies the clicked adapter text after this callback.
+            // Defer committing the actual Destination until that automatic text update
+            // has completed, otherwise TextWatcher can clear the selected coordinates.
+            binding.etSearchDestination.post {
+                isApplyingDestinationText = true
+                binding.etSearchDestination.setText(selected.name, false)
+                isApplyingDestinationText = false
+                applySelectedDestination(selected)
+            }
         }
         binding.etSearchDestination.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
