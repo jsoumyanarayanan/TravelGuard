@@ -154,6 +154,14 @@ class AlarmController(private val context: Context) {
         }
     }
 
+    /**
+     * Reposts and restarts a previously triggered alarm after Android recreates the
+     * foreground service. This is idempotent while the alarm is already playing.
+     */
+    fun ensureWakeAlarm(destinationName: String, distanceMeters: Double) {
+        if (!isAlarmPlaying) triggerWakeAlarm(destinationName, distanceMeters)
+    }
+
     fun stopWakeAlarm() {
         isAlarmPlaying = false
         handler.removeCallbacks(repeatRunnable)
