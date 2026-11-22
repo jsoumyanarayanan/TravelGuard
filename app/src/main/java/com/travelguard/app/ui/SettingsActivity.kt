@@ -105,7 +105,7 @@ class SettingsActivity : AppCompatActivity() {
                     binding.tvUpdateStatus.text = buildString {
                         append("Version v${result.update.versionName} is available.")
                         if (result.update.releaseNotes.isNotBlank()) {
-                            append("\\n\\n")
+                            append("\n\n")
                             append(result.update.releaseNotes)
                         }
                     }
