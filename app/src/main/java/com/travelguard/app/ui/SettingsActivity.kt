@@ -30,6 +30,8 @@ class SettingsActivity : AppCompatActivity() {
     private var availableUpdate: GithubUpdateManager.UpdateInfo? = null
     private var activeDownloadId: Long = -1L
     private var downloadProgressJob: Job? = null
+    private var forceUpdateFlow = false
+    private var awaitingInstallPermission = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,6 +39,7 @@ class SettingsActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         prefs = TravelGuardPreferences(this)
+        forceUpdateFlow = intent.getBooleanExtra(EXTRA_FORCE_UPDATE, false)
         binding.tvInstalledVersion.text = "Installed version v${BuildConfig.VERSION_NAME}"
         binding.progressUpdateDownload.max = 100
         activeDownloadId = getSharedPreferences("travelguard_updates", MODE_PRIVATE).getLong("download_id", -1L)
@@ -93,6 +96,10 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updatePermissionSummary()
+        if (awaitingInstallPermission) {
+            awaitingInstallPermission = false
+            installUpdate()
+        }
     }
 
 
@@ -113,6 +120,7 @@ class SettingsActivity : AppCompatActivity() {
                     }
                     binding.btnDownloadUpdate.visibility = if (activeDownloadId >= 0L) android.view.View.GONE else android.view.View.VISIBLE
                     binding.btnDownloadUpdate.isEnabled = activeDownloadId < 0L
+                    if (forceUpdateFlow && activeDownloadId < 0L) downloadUpdate()
                 }
                 is GithubUpdateManager.CheckResult.UpToDate -> {
                     availableUpdate = null
@@ -166,8 +174,9 @@ class SettingsActivity : AppCompatActivity() {
         when (progress.status) {
             DownloadManager.STATUS_SUCCESSFUL -> {
                 binding.progressUpdateDownload.progress = 100
-                binding.tvUpdateStatus.text = "Update downloaded. Tap Install when ready."
+                binding.tvUpdateStatus.text = "Update downloaded. Preparing Android installer..."
                 binding.btnInstallUpdate.visibility = android.view.View.VISIBLE
+                if (forceUpdateFlow) installUpdate()
             }
             DownloadManager.STATUS_FAILED -> {
                 binding.tvUpdateStatus.text = progress.reason ?: "Download failed. Please try again."
@@ -197,8 +206,9 @@ class SettingsActivity : AppCompatActivity() {
                     DownloadManager.STATUS_PAUSED -> binding.tvUpdateStatus.text = "Download paused. Waiting for network..."
                     DownloadManager.STATUS_SUCCESSFUL -> {
                         binding.progressUpdateDownload.progress = 100
-                        binding.tvUpdateStatus.text = "Update downloaded. Tap Install when ready."
+                        binding.tvUpdateStatus.text = "Update downloaded. Preparing Android installer..."
                         binding.btnInstallUpdate.visibility = android.view.View.VISIBLE
+                        if (forceUpdateFlow) installUpdate()
                         break
                     }
                     DownloadManager.STATUS_FAILED -> {
@@ -221,22 +231,24 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun installUpdate() {
-        if (JourneyStateStore.uiState.value.journeyStatus == JourneyStatus.ACTIVE) {
-            binding.tvUpdateStatus.text = "End the active journey before installing an update. The download can wait until your journey is complete."
-            return
-        }
         if (activeDownloadId < 0L) return
         when (val result = GithubUpdateManager.installDownloaded(this, activeDownloadId)) {
             GithubUpdateManager.InstallResult.Started -> {
+                awaitingInstallPermission = false
                 binding.tvUpdateStatus.text = "Android package installer opened. Confirm the update there."
             }
             GithubUpdateManager.InstallResult.PermissionRequired -> {
-                binding.tvUpdateStatus.text = "Allow TravelGuard to install unknown apps in Android Settings, return here, then tap Install again."
+                awaitingInstallPermission = true
+                binding.tvUpdateStatus.text = "Allow TravelGuard to install unknown apps in Android Settings. The installer will open when you return."
             }
             is GithubUpdateManager.InstallResult.Failed -> {
                 binding.tvUpdateStatus.text = result.reason
             }
         }
+    }
+
+    companion object {
+        const val EXTRA_FORCE_UPDATE = "com.travelguard.app.extra.FORCE_UPDATE"
     }
 
     private fun updatePermissionSummary() {
