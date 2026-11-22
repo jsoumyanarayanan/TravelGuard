@@ -9,6 +9,9 @@ import android.os.Bundle
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.Toast
+import android.widget.ArrayAdapter
+import android.text.Editable
+import android.text.TextWatcher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -31,6 +34,8 @@ import com.travelguard.app.domain.model.ProximityAlarmState
 import com.travelguard.app.domain.model.RouteMonitoringState
 import com.travelguard.app.navigation.GoogleMapsDirectionsLauncher
 import com.travelguard.app.service.LocationTrackingService
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -56,6 +61,10 @@ class MainActivity : AppCompatActivity() {
     private var radiusPolygon: Polygon? = null
     private var routePolyline: Polyline? = null
     private var isUpdatingControlsProgrammatically = false
+    private var isApplyingDestinationText = false
+    private var suggestionJob: Job? = null
+    private var suggestionRequestId = 0L
+    private var suggestionDestinations: List<Destination> = emptyList()
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -161,6 +170,73 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnSearchDestination.setOnClickListener { performDestinationSearch() }
+        binding.etSearchDestination.threshold = 3
+        binding.etSearchDestination.setAdapter(
+            ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, mutableListOf<String>())
+        )
+        binding.etSearchDestination.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (isApplyingDestinationText) return
+                if (JourneyStateStore.uiState.value.journeyStatus == JourneyStatus.ACTIVE) return
+
+                val query = s?.toString()?.trim().orEmpty()
+                suggestionJob?.cancel()
+                suggestionRequestId++
+                val requestId = suggestionRequestId
+                suggestionDestinations = emptyList()
+                (binding.etSearchDestination.adapter as? ArrayAdapter<String>)?.clear()
+
+                // A typed query is not a confirmed destination. Remove stale coordinates immediately.
+                if (JourneyStateStore.uiState.value.destination != null) {
+                    JourneyStateStore.setDestination(this@MainActivity, null)
+                }
+                if (query.length < 3) {
+                    binding.etSearchDestination.dismissDropDown()
+                    return
+                }
+
+                suggestionJob = lifecycleScope.launch {
+                    // Nominatim's public service asks clients to stay at or below one request/second.
+                    delay(1_100)
+                    when (val result = geocodingClient.search(query)) {
+                        is NominatimGeocodingClient.SearchResult.Success -> {
+                            if (requestId != suggestionRequestId ||
+                                binding.etSearchDestination.text?.toString()?.trim() != query
+                            ) return@launch
+                            suggestionDestinations = result.destinations
+                            val labels = result.destinations.map {
+                                if (it.address.isBlank() || it.address == it.name) it.name
+                                else "${it.name} — ${it.address}"
+                            }
+                            val adapter = binding.etSearchDestination.adapter as ArrayAdapter<String>
+                            adapter.clear()
+                            adapter.addAll(labels)
+                            adapter.notifyDataSetChanged()
+                            if (labels.isNotEmpty()) binding.etSearchDestination.showDropDown()
+                            else binding.etSearchDestination.dismissDropDown()
+                        }
+                        is NominatimGeocodingClient.SearchResult.Error -> {
+                            if (requestId == suggestionRequestId) {
+                                JourneyStateStore.update { it.copy(warningMessage = result.message) }
+                            }
+                        }
+                    }
+                }
+            }
+
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+        binding.etSearchDestination.setOnItemClickListener { _, _, position, _ ->
+            val selected = suggestionDestinations.getOrNull(position) ?: return@setOnItemClickListener
+            isApplyingDestinationText = true
+            binding.etSearchDestination.setText(selected.name, false)
+            isApplyingDestinationText = false
+            suggestionJob?.cancel()
+            suggestionRequestId++
+            applySelectedDestination(selected)
+        }
         binding.etSearchDestination.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
                 performDestinationSearch()
@@ -175,8 +251,12 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "End the active journey first.", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            suggestionJob?.cancel()
+            suggestionRequestId++
             JourneyStateStore.setDestination(this, null)
-            binding.etSearchDestination.setText("")
+            isApplyingDestinationText = true
+            binding.etSearchDestination.setText("", false)
+            isApplyingDestinationText = false
         }
 
         binding.btnRecenterMap.setOnClickListener {
@@ -328,6 +408,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applySelectedDestination(dest: Destination) {
+        suggestionJob?.cancel()
+        suggestionRequestId++
+        isApplyingDestinationText = true
+        binding.etSearchDestination.setText(dest.name, false)
+        isApplyingDestinationText = false
         JourneyStateStore.setDestination(this, dest)
         binding.mapView.controller.animateTo(GeoPoint(dest.latitude, dest.longitude))
         fetchPreviewRouteIfPossible()
