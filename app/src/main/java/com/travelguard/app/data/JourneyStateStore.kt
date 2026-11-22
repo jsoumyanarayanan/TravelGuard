@@ -61,18 +61,31 @@ object JourneyStateStore {
     }
 
     fun setDestination(context: Context, destination: Destination?) {
+        val previous = _uiState.value.destination
+        val destinationChanged = destination == null ||
+            previous?.latitude != destination.latitude ||
+            previous?.longitude != destination.longitude
         TravelGuardPreferences(context).saveDestination(destination)
-        if (destination == null) {
+        if (destinationChanged) {
+            // Never retain a route calculated for a different destination.
             TravelGuardPreferences(context).saveCachedRoute(null)
         }
-        _uiState.update {
-            it.copy(
+        _uiState.update { state ->
+            state.copy(
                 destination = destination,
-                routeData = if (destination == null) null else it.routeData,
-                remainingDistanceMeters = if (destination == null) null else it.remainingDistanceMeters,
-                estimatedRemainingSeconds = if (destination == null) null else it.estimatedRemainingSeconds,
-                estimatedArrivalMillis = if (destination == null) null else it.estimatedArrivalMillis,
-                progressPercent = if (destination == null) null else it.progressPercent
+                routeData = if (destinationChanged) null else state.routeData,
+                isRouteStale = destinationChanged,
+                routeMonitoringState = when {
+                    !state.routeGuardEnabled -> RouteMonitoringState.DISABLED
+                    destinationChanged -> RouteMonitoringState.WAITING_FOR_ROUTE
+                    state.routeData != null -> RouteMonitoringState.MONITORING
+                    else -> RouteMonitoringState.WAITING_FOR_ROUTE
+                },
+                routeDeviationMeters = if (destinationChanged) null else state.routeDeviationMeters,
+                remainingDistanceMeters = if (destinationChanged) null else state.remainingDistanceMeters,
+                estimatedRemainingSeconds = if (destinationChanged) null else state.estimatedRemainingSeconds,
+                estimatedArrivalMillis = if (destinationChanged) null else state.estimatedArrivalMillis,
+                progressPercent = if (destinationChanged) null else state.progressPercent
             )
         }
     }

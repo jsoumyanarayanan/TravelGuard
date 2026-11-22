@@ -57,8 +57,12 @@ class RouteDeviationMonitor(
     ): Boolean {
         if (state == RouteMonitoringState.DISABLED) return false
         if (route == null || route.points.size < 2) {
-            state = RouteMonitoringState.UNAVAILABLE
             lastDeviationMeters = null
+            // A route request may still be in flight. Keep the UI in WAITING_FOR_ROUTE
+            // until the caller explicitly reports a network/routing failure.
+            if (state != RouteMonitoringState.WAITING_FOR_ROUTE) {
+                state = RouteMonitoringState.UNAVAILABLE
+            }
             return false
         }
 

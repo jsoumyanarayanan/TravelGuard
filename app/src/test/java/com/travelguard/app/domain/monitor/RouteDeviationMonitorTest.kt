@@ -47,10 +47,20 @@ class RouteDeviationMonitorTest {
     }
 
     @Test
-    fun evaluate_marksUnavailableWhenRouteMissing() {
+    fun evaluate_keepsWaitingWhileRouteRequestIsPending() {
         val monitor = RouteDeviationMonitor()
         monitor.setEnabled(enabled = true, hasRoute = false)
+        assertEquals(RouteMonitoringState.WAITING_FOR_ROUTE, monitor.state)
+
         assertFalse(monitor.evaluate(13.0200, 80.0500, null, 1.0f))
+        assertEquals(RouteMonitoringState.WAITING_FOR_ROUTE, monitor.state)
+    }
+
+    @Test
+    fun markRouteUnavailable_changesWaitingStateOnlyAfterFetchFailure() {
+        val monitor = RouteDeviationMonitor()
+        monitor.setEnabled(enabled = true, hasRoute = false)
+        monitor.markRouteUnavailable()
         assertEquals(RouteMonitoringState.UNAVAILABLE, monitor.state)
     }
 }

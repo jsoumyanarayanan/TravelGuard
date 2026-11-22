@@ -9,6 +9,10 @@ import android.os.Bundle
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.Toast
+import android.widget.ArrayAdapter
+import android.widget.Filter
+import android.text.Editable
+import android.text.TextWatcher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -31,6 +35,10 @@ import com.travelguard.app.domain.model.ProximityAlarmState
 import com.travelguard.app.domain.model.RouteMonitoringState
 import com.travelguard.app.navigation.GoogleMapsDirectionsLauncher
 import com.travelguard.app.service.LocationTrackingService
+import com.travelguard.app.BuildConfig
+import com.travelguard.app.update.GithubUpdateManager
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -56,6 +64,12 @@ class MainActivity : AppCompatActivity() {
     private var radiusPolygon: Polygon? = null
     private var routePolyline: Polyline? = null
     private var isUpdatingControlsProgrammatically = false
+    private var isApplyingDestinationText = false
+    private var suggestionJob: Job? = null
+    private var suggestionRequestId = 0L
+    private var suggestionDestinations: List<Destination> = emptyList()
+    private var updateCheckJob: Job? = null
+    private var isUpdatePromptVisible = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -63,12 +77,7 @@ class MainActivity : AppCompatActivity() {
         val fineGranted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
         val coarseGranted = grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (fineGranted || coarseGranted) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-            ) {
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-            startJourneyService()
+            requestNotificationPermissionThenStart()
         } else {
             JourneyStateStore.update {
                 it.copy(warningMessage = "Location permission is required to monitor your journey.")
@@ -86,6 +95,9 @@ class MainActivity : AppCompatActivity() {
                 Toast.LENGTH_LONG
             ).show()
         }
+        // Continue monitoring even when notification permission is denied. Android
+        // may limit visible notifications, but the foreground service can still run.
+        startJourneyService()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -100,6 +112,36 @@ class MainActivity : AppCompatActivity() {
         setupMap()
         setupControls()
         observeState()
+    }
+
+
+    private fun checkForAppUpdate() {
+        if (isFinishing || isDestroyed || isUpdatePromptVisible) return
+        updateCheckJob?.cancel()
+        updateCheckJob = lifecycleScope.launch {
+            when (val result = GithubUpdateManager.checkForUpdate(BuildConfig.VERSION_NAME)) {
+                is GithubUpdateManager.CheckResult.Available -> {
+                    if (isFinishing || isDestroyed || isUpdatePromptVisible) return@launch
+                    isUpdatePromptVisible = true
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("TravelGuard update required")
+                        .setMessage(
+                            "Version v${result.update.versionName} is ready. Update TravelGuard to continue with the latest safety features. Your saved destination and settings will be retained."
+                        )
+                        .setCancelable(false)
+                        .setPositiveButton("Download & update") { _, _ ->
+                            isUpdatePromptVisible = false
+                            startActivity(
+                                Intent(this@MainActivity, SettingsActivity::class.java)
+                                    .putExtra(SettingsActivity.EXTRA_FORCE_UPDATE, true)
+                            )
+                        }
+                        .show()
+                }
+                is GithubUpdateManager.CheckResult.UpToDate,
+                is GithubUpdateManager.CheckResult.Failed -> Unit
+            }
+        }
     }
 
     private fun setupMap() {
@@ -137,6 +179,9 @@ class MainActivity : AppCompatActivity() {
             longitude = point.longitude
         )
         JourneyStateStore.setDestination(this, initialDest)
+        isApplyingDestinationText = true
+        binding.etSearchDestination.setText(initialDest.name, false)
+        isApplyingDestinationText = false
 
         lifecycleScope.launch {
             val label = geocodingClient.reverseGeocode(point.latitude, point.longitude)
@@ -151,6 +196,9 @@ class MainActivity : AppCompatActivity() {
                     initialDest.copy(address = "Map pin (offline)")
                 )
             }
+            isApplyingDestinationText = true
+            binding.etSearchDestination.setText(JourneyStateStore.uiState.value.destination?.name ?: initialDest.name, false)
+            isApplyingDestinationText = false
             fetchPreviewRouteIfPossible()
         }
     }
@@ -161,6 +209,93 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnSearchDestination.setOnClickListener { performDestinationSearch() }
+        binding.etSearchDestination.threshold = 3
+        binding.etSearchDestination.setAdapter(UnfilteredSuggestionAdapter(this))
+        binding.etSearchDestination.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (isApplyingDestinationText) return
+                if (JourneyStateStore.uiState.value.journeyStatus == JourneyStatus.ACTIVE) return
+
+                val query = s?.toString()?.trim().orEmpty()
+
+                // AutoCompleteTextView replaces the field with the clicked adapter label
+                // BEFORE invoking OnItemClickListener. Do not treat that replacement as
+                // fresh typing: doing so clears suggestionDestinations before the click
+                // listener can retrieve the selected coordinates.
+                val isAdapterCompletion = suggestionDestinations.any { destination ->
+                    val label = if (destination.address.isBlank() || destination.address == destination.name) {
+                        destination.name
+                    } else {
+                        "${destination.name} — ${destination.address}"
+                    }
+                    query == label
+                }
+                if (isAdapterCompletion) return
+
+                suggestionJob?.cancel()
+                suggestionRequestId++
+                val requestId = suggestionRequestId
+                suggestionDestinations = emptyList()
+                (binding.etSearchDestination.adapter as? UnfilteredSuggestionAdapter)?.replaceSuggestions(emptyList())
+
+                // A typed query is not a confirmed destination. Remove stale coordinates immediately.
+                if (JourneyStateStore.uiState.value.destination != null) {
+                    JourneyStateStore.setDestination(this@MainActivity, null)
+                }
+                if (query.length < 3) {
+                    binding.etSearchDestination.dismissDropDown()
+                    return
+                }
+
+                suggestionJob = lifecycleScope.launch {
+                    // Nominatim's public service asks clients to stay at or below one request/second.
+                    delay(1_100)
+                    when (val result = geocodingClient.search(query)) {
+                        is NominatimGeocodingClient.SearchResult.Success -> {
+                            if (requestId != suggestionRequestId ||
+                                binding.etSearchDestination.text?.toString()?.trim() != query
+                            ) return@launch
+                            suggestionDestinations = result.destinations
+                            val labels = result.destinations.map {
+                                if (it.address.isBlank() || it.address == it.name) it.name
+                                else "${it.name} — ${it.address}"
+                            }
+                            val adapter = binding.etSearchDestination.adapter as UnfilteredSuggestionAdapter
+                            adapter.replaceSuggestions(labels)
+                            if (labels.isNotEmpty()) binding.etSearchDestination.showDropDown()
+                            else binding.etSearchDestination.dismissDropDown()
+                        }
+                        is NominatimGeocodingClient.SearchResult.Error -> {
+                            if (requestId == suggestionRequestId) {
+                                JourneyStateStore.update { it.copy(warningMessage = result.message) }
+                            }
+                        }
+                    }
+                }
+            }
+
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+        binding.etSearchDestination.setOnItemClickListener { _, _, position, _ ->
+            val selected = suggestionDestinations.getOrNull(position) ?: return@setOnItemClickListener
+            suggestionJob?.cancel()
+            suggestionRequestId++
+
+            // AutoCompleteTextView writes the clicked label after this callback.
+            // Suppress TextWatcher immediately so that this automatic replacement is
+            // never mistaken for fresh user typing or allowed to clear the destination.
+            isApplyingDestinationText = true
+            binding.etSearchDestination.post {
+                try {
+                    binding.etSearchDestination.setText(selected.name, false)
+                } finally {
+                    isApplyingDestinationText = false
+                }
+                applySelectedDestination(selected)
+            }
+        }
         binding.etSearchDestination.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
                 performDestinationSearch()
@@ -175,8 +310,12 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "End the active journey first.", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            suggestionJob?.cancel()
+            suggestionRequestId++
             JourneyStateStore.setDestination(this, null)
-            binding.etSearchDestination.setText("")
+            isApplyingDestinationText = true
+            binding.etSearchDestination.setText("", false)
+            isApplyingDestinationText = false
         }
 
         binding.btnRecenterMap.setOnClickListener {
@@ -290,6 +429,10 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnOpenGoogleMaps.setOnClickListener {
             val state = JourneyStateStore.uiState.value
+            if (state.currentLocation == null || state.isLocationStale) {
+                Toast.makeText(this, "Waiting for a fresh GPS location before opening directions.", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             when (val res = GoogleMapsDirectionsLauncher.openDirections(this, state.currentLocation, state.destination)) {
                 is GoogleMapsDirectionsLauncher.LaunchResult.Failed -> {
                     Toast.makeText(this, res.reason, Toast.LENGTH_LONG).show()
@@ -300,24 +443,38 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun performDestinationSearch() {
+        if (JourneyStateStore.uiState.value.journeyStatus == JourneyStatus.ACTIVE) {
+            Toast.makeText(this, "End the active journey before changing destination.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        suggestionJob?.cancel()
+        suggestionRequestId++
+        val requestId = suggestionRequestId
         val query = binding.etSearchDestination.text?.toString().orEmpty().trim()
-        if (query.isEmpty()) return
+        if (query.length < 3) {
+            Toast.makeText(this, "Type at least 3 characters to search.", Toast.LENGTH_SHORT).show()
+            return
+        }
 
         lifecycleScope.launch {
             when (val result = geocodingClient.search(query)) {
                 is NominatimGeocodingClient.SearchResult.Success -> {
-                    if (result.destinations.isEmpty()) {
-                        Toast.makeText(this@MainActivity, "No matching places found.", Toast.LENGTH_SHORT).show()
-                    } else if (result.destinations.size == 1) {
-                        applySelectedDestination(result.destinations[0])
+                    if (requestId != suggestionRequestId ||
+                        binding.etSearchDestination.text?.toString()?.trim() != query
+                    ) return@launch
+                    suggestionDestinations = result.destinations
+                    val labels = result.destinations.map {
+                        if (it.address.isBlank() || it.address == it.name) it.name
+                        else "${it.name} — ${it.address}"
+                    }
+                    (binding.etSearchDestination.adapter as UnfilteredSuggestionAdapter)
+                        .replaceSuggestions(labels)
+                    if (labels.isNotEmpty()) {
+                        binding.etSearchDestination.requestFocus()
+                        binding.etSearchDestination.showDropDown()
                     } else {
-                        val labels = result.destinations.map { "${it.name}\n${it.address}" }.toTypedArray()
-                        AlertDialog.Builder(this@MainActivity)
-                            .setTitle("Select destination")
-                            .setItems(labels) { _, which ->
-                                applySelectedDestination(result.destinations[which])
-                            }
-                            .show()
+                        binding.etSearchDestination.dismissDropDown()
+                        Toast.makeText(this@MainActivity, "No matching places found.", Toast.LENGTH_SHORT).show()
                     }
                 }
                 is NominatimGeocodingClient.SearchResult.Error -> {
@@ -328,6 +485,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applySelectedDestination(dest: Destination) {
+        if (JourneyStateStore.uiState.value.journeyStatus == JourneyStatus.ACTIVE) {
+            Toast.makeText(this, "End the active journey before changing destination.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        suggestionJob?.cancel()
+        suggestionRequestId++
+        isApplyingDestinationText = true
+        binding.etSearchDestination.setText(dest.name, false)
+        isApplyingDestinationText = false
         JourneyStateStore.setDestination(this, dest)
         binding.mapView.controller.animateTo(GeoPoint(dest.latitude, dest.longitude))
         fetchPreviewRouteIfPossible()
@@ -353,7 +519,7 @@ class MainActivity : AppCompatActivity() {
         val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val hasCoarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (hasFine || hasCoarse) {
-            startJourneyService()
+            requestNotificationPermissionThenStart()
         } else {
             AlertDialog.Builder(this)
                 .setTitle("Location permission needed")
@@ -368,6 +534,16 @@ class MainActivity : AppCompatActivity() {
                 }
                 .setNegativeButton("Cancel", null)
                 .show()
+        }
+    }
+
+    private fun requestNotificationPermissionThenStart() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            startJourneyService()
         }
     }
 
@@ -393,6 +569,19 @@ class MainActivity : AppCompatActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 JourneyStateStore.uiState.collect { state ->
                     renderState(state)
+                }
+            }
+        }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    delay(15_000)
+                    val sample = JourneyStateStore.uiState.value.currentLocation
+                    val stale = sample == null ||
+                        System.currentTimeMillis() - sample.timestampMillis > 60_000L
+                    if (JourneyStateStore.uiState.value.isLocationStale != stale) {
+                        JourneyStateStore.update { it.copy(isLocationStale = stale) }
+                    }
                 }
             }
         }
@@ -450,7 +639,12 @@ class MainActivity : AppCompatActivity() {
             if (state.journeyStatus == JourneyStatus.ACTIVE) getString(R.string.end_journey)
             else getString(R.string.start_journey)
 
-        binding.btnOpenGoogleMaps.isEnabled = state.destination != null && state.destination.isValid()
+        val destinationEditable = state.journeyStatus != JourneyStatus.ACTIVE
+        binding.etSearchDestination.isEnabled = destinationEditable
+        binding.btnSearchDestination.isEnabled = destinationEditable
+        binding.btnClearDestination.isEnabled = destinationEditable
+        binding.btnOpenGoogleMaps.isEnabled = state.destination != null &&
+            state.destination.isValid() && state.currentLocation != null && !state.isLocationStale
 
         // Metrics
         val distMeters = state.remainingDistanceMeters
@@ -483,7 +677,7 @@ class MainActivity : AppCompatActivity() {
         val loc = state.currentLocation
         binding.tvGpsAge.text = if (loc != null) {
             val ageSec = ((System.currentTimeMillis() - loc.timestampMillis) / 1000L).coerceAtLeast(0L)
-            val staleNote = if (ageSec > 60) " (Stale)" else ""
+            val staleNote = if (state.isLocationStale || ageSec > 60) " (Stale — waiting for GPS)" else ""
             "GPS: ±${loc.accuracyMeters.toInt()}m • ${ageSec}s ago$staleNote"
         } else {
             "GPS status: No fix yet"
@@ -580,6 +774,48 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         binding.mapView.onResume()
+        resumeJourneyAfterUpdateIfNeeded()
+        checkForAppUpdate()
+    }
+
+    private fun resumeJourneyAfterUpdateIfNeeded() {
+        val recoveryPrefs = getSharedPreferences("travelguard_recovery", MODE_PRIVATE)
+        if (!recoveryPrefs.getBoolean("journey_resume_pending", false)) return
+        val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasFine && !hasCoarse) return
+        runCatching {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, LocationTrackingService::class.java)
+            )
+        }
+    }
+
+    private class UnfilteredSuggestionAdapter(context: android.content.Context) :
+        ArrayAdapter<String>(context, android.R.layout.simple_dropdown_item_1line) {
+
+        private val allSuggestions = mutableListOf<String>()
+
+        fun replaceSuggestions(items: List<String>) {
+            allSuggestions.clear()
+            allSuggestions.addAll(items)
+            clear()
+            addAll(items)
+            notifyDataSetChanged()
+        }
+
+        override fun getFilter(): Filter = object : Filter() {
+            override fun performFiltering(constraint: CharSequence?): Filter.FilterResults =
+                Filter.FilterResults().apply {
+                    values = allSuggestions.toList()
+                    count = allSuggestions.size
+                }
+
+            override fun publishResults(constraint: CharSequence?, results: Filter.FilterResults?) {
+                notifyDataSetChanged()
+            }
+        }
     }
 
     override fun onPause() {

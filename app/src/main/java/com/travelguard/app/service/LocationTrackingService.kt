@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import com.travelguard.app.assist.OvernightTravelAssist
 import com.travelguard.app.alarm.AlarmController
 import com.travelguard.app.data.JourneyStateStore
 import com.travelguard.app.data.local.TravelGuardPreferences
@@ -39,12 +40,14 @@ class LocationTrackingService : Service(), LocationListener {
     private val geocodingClient = NominatimGeocodingClient()
     private val routingClient = OsrmRoutingClient()
 
-    private val proximityMonitor = DestinationProximityMonitor()
+    private lateinit var proximityMonitor: DestinationProximityMonitor
     private val deviationMonitor = RouteDeviationMonitor()
 
     private var lastReliableSample: LocationSample? = null
     private var lastLocalityLookupTime = 0L
     private var isHighPrecisionInterval = false
+    private var routeFetchInFlight = false
+    private var lastRouteFetchAttemptMillis = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -52,19 +55,31 @@ class LocationTrackingService : Service(), LocationListener {
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
         alarmController = AlarmController(this)
         prefs = TravelGuardPreferences(this)
+        proximityMonitor = DestinationProximityMonitor(prefs.getProximityState())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START_JOURNEY -> startJourney()
             ACTION_STOP_JOURNEY -> stopJourney()
-            ACTION_ACKNOWLEDGE_ALARM -> acknowledgeAlarm()
+            ACTION_ACKNOWLEDGE_ALARM -> {
+                if (prefs.getJourneyStatus() == JourneyStatus.ACTIVE) {
+                    startJourney(resumeExisting = true)
+                }
+                acknowledgeAlarm()
+            }
             ACTION_REFRESH_CONFIG -> syncConfigFromStore()
+            null -> {
+                // Android may recreate a START_STICKY foreground service with a null intent.
+                // Resume monitoring only when a journey was persisted as active.
+                if (prefs.getJourneyStatus() == JourneyStatus.ACTIVE) startJourney(resumeExisting = true)
+                else stopSelf()
+            }
         }
         return START_STICKY
     }
 
-    private fun startJourney() {
+    private fun startJourney(resumeExisting: Boolean = false) {
         val state = JourneyStateStore.uiState.value
         val dest = state.destination
         if (dest == null || !dest.isValid()) {
@@ -78,9 +93,21 @@ class LocationTrackingService : Service(), LocationListener {
             return
         }
 
-        proximityMonitor.resetForNewJourney(state.wakeMeUpEnabled)
-        deviationMonitor.setEnabled(state.routeGuardEnabled, state.routeData != null)
+        if (resumeExisting) proximityMonitor.setEnabled(state.wakeMeUpEnabled)
+        else {
+            proximityMonitor.resetForNewJourney(state.wakeMeUpEnabled)
+            OvernightTravelAssist.resetForNewJourney(this)
+        }
+
+        // A cached route belongs to an earlier GPS origin. Never monitor against it
+        // as though it were the route for this journey; rebuild from a fresh fix.
+        routeFetchInFlight = false
+        lastRouteFetchAttemptMillis = 0L
+        JourneyStateStore.setRouteData(this, null)
+        deviationMonitor.setEnabled(state.routeGuardEnabled, false)
         prefs.saveJourneyRuntimeState(JourneyStatus.ACTIVE, proximityMonitor.state)
+        getSharedPreferences("travelguard_recovery", MODE_PRIVATE)
+            .edit().putBoolean("journey_resume_pending", false).apply()
 
         JourneyStateStore.update {
             it.copy(
@@ -113,28 +140,53 @@ class LocationTrackingService : Service(), LocationListener {
         val lastNet = runCatching { locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER) }.getOrNull()
         val best = listOfNotNull(lastGps, lastNet).maxByOrNull { it.time }
 
-        if (best != null) {
+        // Android's last-known location can be hours old. Do not use it as the
+        // journey origin; wait for a fresh provider update instead.
+        if (best != null && GeoMath.isFreshLocation(best.time)) {
             onLocationChanged(best)
-            val state = JourneyStateStore.uiState.value
-            val dest = state.destination ?: return
-            if (state.routeData == null) {
-                serviceScope.launch {
-                    when (val result = routingClient.fetchRoute(best.latitude, best.longitude, dest.latitude, dest.longitude)) {
-                        is OsrmRoutingClient.RouteResult.Success -> {
-                            JourneyStateStore.setRouteData(this@LocationTrackingService, result.route)
-                            deviationMonitor.markRouteLoaded()
-                        }
-                        is OsrmRoutingClient.RouteResult.Unavailable -> {
-                            deviationMonitor.markRouteUnavailable()
-                            JourneyStateStore.update {
-                                it.copy(
-                                    routeMonitoringState = deviationMonitor.state,
-                                    warningMessage = result.reason
-                                )
-                            }
+            if (proximityMonitor.state == ProximityAlarmState.TRIGGERED) {
+                val savedDestination = JourneyStateStore.uiState.value.destination
+                if (savedDestination != null) {
+                    val distance = GeoMath.distanceMeters(best.latitude, best.longitude, savedDestination.latitude, savedDestination.longitude)
+                    alarmController.ensureWakeAlarm(savedDestination.name, distance)
+                }
+            }
+        }
+    }
+
+    /**
+     * Fetches a route from the first fresh GPS origin. This also covers devices that
+     * have no last-known location when the journey starts. Failed requests are retried
+     * no more than once per minute as new GPS samples arrive.
+     */
+    private fun requestRoute(originLat: Double, originLon: Double, destination: com.travelguard.app.domain.model.Destination) {
+        val now = System.currentTimeMillis()
+        if (routeFetchInFlight || now - lastRouteFetchAttemptMillis < ROUTE_RETRY_INTERVAL_MS) return
+
+        routeFetchInFlight = true
+        lastRouteFetchAttemptMillis = now
+        serviceScope.launch {
+            try {
+                when (val result = routingClient.fetchRoute(
+                    originLat, originLon, destination.latitude, destination.longitude
+                )) {
+                    is OsrmRoutingClient.RouteResult.Success -> {
+                        JourneyStateStore.setRouteData(this@LocationTrackingService, result.route)
+                        deviationMonitor.markRouteLoaded()
+                    }
+                    is OsrmRoutingClient.RouteResult.Unavailable -> {
+                        deviationMonitor.markRouteUnavailable()
+                        JourneyStateStore.setRouteData(this@LocationTrackingService, null)
+                        JourneyStateStore.update {
+                            it.copy(
+                                routeMonitoringState = if (it.routeGuardEnabled) RouteMonitoringState.UNAVAILABLE else RouteMonitoringState.DISABLED,
+                                warningMessage = result.reason
+                            )
                         }
                     }
                 }
+            } finally {
+                routeFetchInFlight = false
             }
         }
     }
@@ -233,7 +285,14 @@ class LocationTrackingService : Service(), LocationListener {
         lastReliableSample = sample
 
         val state = JourneyStateStore.uiState.value
+        OvernightTravelAssist.recordLocation(
+            this, sample.latitude, sample.longitude, sample.accuracyMeters,
+            sample.timestampMillis, state.journeyStatus == JourneyStatus.ACTIVE
+        )
         val dest = state.destination ?: return
+        if (state.routeData == null) {
+            requestRoute(sample.latitude, sample.longitude, dest)
+        }
         val directDistance = GeoMath.distanceMeters(sample.latitude, sample.longitude, dest.latitude, dest.longitude)
 
         // Adaptive GPS sampling: tighten when within 2x wake radius
@@ -256,6 +315,10 @@ class LocationTrackingService : Service(), LocationListener {
                 "Wake Me Up",
                 "Entered ${String.format("%.1f", state.wakeRadiusKm)} km radius of ${dest.name}."
             )
+        } else if (proximityMonitor.state == ProximityAlarmState.TRIGGERED) {
+            // If Android recreated the service after process death, restore the alarm
+            // on the first fresh fix even though the state machine is already TRIGGERED.
+            alarmController.ensureWakeAlarm(dest.name, directDistance)
         }
 
         // Evaluate Route Guard
@@ -344,6 +407,7 @@ class LocationTrackingService : Service(), LocationListener {
     }
 
     override fun onDestroy() {
+        runCatching { alarmController.stopWakeAlarm() }
         serviceScope.cancel()
         runCatching { locationManager.removeUpdates(this) }
         super.onDestroy()
@@ -356,5 +420,6 @@ class LocationTrackingService : Service(), LocationListener {
         const val ACTION_STOP_JOURNEY = "com.travelguard.action.STOP_JOURNEY"
         const val ACTION_ACKNOWLEDGE_ALARM = "com.travelguard.action.ACK_ALARM"
         const val ACTION_REFRESH_CONFIG = "com.travelguard.action.REFRESH_CONFIG"
+        private const val ROUTE_RETRY_INTERVAL_MS = 60_000L
     }
 }
