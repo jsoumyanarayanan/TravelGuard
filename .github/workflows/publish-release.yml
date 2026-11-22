@@ -38,6 +38,9 @@ jobs:
         with:
           gradle-version: "8.7"
 
+      - name: Run unit tests
+        run: gradle --no-daemon testDebugUnitTest
+
       - name: Prepare release signing key
         env:
           SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
