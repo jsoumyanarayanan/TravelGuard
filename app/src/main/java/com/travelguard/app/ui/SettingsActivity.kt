@@ -111,8 +111,8 @@ class SettingsActivity : AppCompatActivity() {
                             append(result.update.releaseNotes)
                         }
                     }
-                    binding.btnDownloadUpdate.visibility = android.view.View.VISIBLE
-                    binding.btnDownloadUpdate.isEnabled = true
+                    binding.btnDownloadUpdate.visibility = if (activeDownloadId >= 0L) android.view.View.GONE else android.view.View.VISIBLE
+                    binding.btnDownloadUpdate.isEnabled = activeDownloadId < 0L
                 }
                 is GithubUpdateManager.CheckResult.UpToDate -> {
                     availableUpdate = null
@@ -155,6 +155,10 @@ class SettingsActivity : AppCompatActivity() {
         val progress = GithubUpdateManager.getDownloadProgress(this, activeDownloadId)
         if (progress == null) {
             clearSavedDownload()
+            if (availableUpdate != null) {
+                binding.btnDownloadUpdate.visibility = android.view.View.VISIBLE
+                binding.btnDownloadUpdate.isEnabled = true
+            }
             return
         }
         binding.progressUpdateDownload.visibility = android.view.View.VISIBLE
