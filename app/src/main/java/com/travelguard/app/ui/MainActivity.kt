@@ -72,12 +72,7 @@ class MainActivity : AppCompatActivity() {
         val fineGranted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
         val coarseGranted = grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (fineGranted || coarseGranted) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-            ) {
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-            startJourneyService()
+            requestNotificationPermissionThenStart()
         } else {
             JourneyStateStore.update {
                 it.copy(warningMessage = "Location permission is required to monitor your journey.")
@@ -95,6 +90,9 @@ class MainActivity : AppCompatActivity() {
                 Toast.LENGTH_LONG
             ).show()
         }
+        // Continue monitoring even when notification permission is denied. Android
+        // may limit visible notifications, but the foreground service can still run.
+        startJourneyService()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -458,7 +456,7 @@ class MainActivity : AppCompatActivity() {
         val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val hasCoarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (hasFine || hasCoarse) {
-            startJourneyService()
+            requestNotificationPermissionThenStart()
         } else {
             AlertDialog.Builder(this)
                 .setTitle("Location permission needed")
@@ -473,6 +471,16 @@ class MainActivity : AppCompatActivity() {
                 }
                 .setNegativeButton("Cancel", null)
                 .show()
+        }
+    }
+
+    private fun requestNotificationPermissionThenStart() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            startJourneyService()
         }
     }
 
