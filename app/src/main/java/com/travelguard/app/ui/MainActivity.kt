@@ -146,6 +146,9 @@ class MainActivity : AppCompatActivity() {
             longitude = point.longitude
         )
         JourneyStateStore.setDestination(this, initialDest)
+        isApplyingDestinationText = true
+        binding.etSearchDestination.setText(initialDest.name, false)
+        isApplyingDestinationText = false
 
         lifecycleScope.launch {
             val label = geocodingClient.reverseGeocode(point.latitude, point.longitude)
@@ -160,6 +163,9 @@ class MainActivity : AppCompatActivity() {
                     initialDest.copy(address = "Map pin (offline)")
                 )
             }
+            isApplyingDestinationText = true
+            binding.etSearchDestination.setText(JourneyStateStore.uiState.value.destination?.name ?: initialDest.name, false)
+            isApplyingDestinationText = false
             fetchPreviewRouteIfPossible()
         }
     }
@@ -380,6 +386,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun performDestinationSearch() {
+        if (JourneyStateStore.uiState.value.journeyStatus == JourneyStatus.ACTIVE) {
+            Toast.makeText(this, "End the active journey before changing destination.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        suggestionJob?.cancel()
+        suggestionRequestId++
         val query = binding.etSearchDestination.text?.toString().orEmpty().trim()
         if (query.isEmpty()) return
 
@@ -408,6 +420,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applySelectedDestination(dest: Destination) {
+        if (JourneyStateStore.uiState.value.journeyStatus == JourneyStatus.ACTIVE) {
+            Toast.makeText(this, "End the active journey before changing destination.", Toast.LENGTH_SHORT).show()
+            return
+        }
         suggestionJob?.cancel()
         suggestionRequestId++
         isApplyingDestinationText = true
@@ -535,6 +551,10 @@ class MainActivity : AppCompatActivity() {
             if (state.journeyStatus == JourneyStatus.ACTIVE) getString(R.string.end_journey)
             else getString(R.string.start_journey)
 
+        val destinationEditable = state.journeyStatus != JourneyStatus.ACTIVE
+        binding.etSearchDestination.isEnabled = destinationEditable
+        binding.btnSearchDestination.isEnabled = destinationEditable
+        binding.btnClearDestination.isEnabled = destinationEditable
         binding.btnOpenGoogleMaps.isEnabled = state.destination != null && state.destination.isValid()
 
         // Metrics
