@@ -106,6 +106,8 @@ class LocationTrackingService : Service(), LocationListener {
         JourneyStateStore.setRouteData(this, null)
         deviationMonitor.setEnabled(state.routeGuardEnabled, false)
         prefs.saveJourneyRuntimeState(JourneyStatus.ACTIVE, proximityMonitor.state)
+        getSharedPreferences("travelguard_recovery", MODE_PRIVATE)
+            .edit().putBoolean("journey_resume_pending", false).apply()
 
         JourneyStateStore.update {
             it.copy(
