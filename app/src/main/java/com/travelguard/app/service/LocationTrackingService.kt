@@ -117,21 +117,21 @@ class LocationTrackingService : Service(), LocationListener {
             onLocationChanged(best)
             val state = JourneyStateStore.uiState.value
             val dest = state.destination ?: return
-            if (state.routeData == null) {
-                serviceScope.launch {
-                    when (val result = routingClient.fetchRoute(best.latitude, best.longitude, dest.latitude, dest.longitude)) {
-                        is OsrmRoutingClient.RouteResult.Success -> {
-                            JourneyStateStore.setRouteData(this@LocationTrackingService, result.route)
-                            deviationMonitor.markRouteLoaded()
-                        }
-                        is OsrmRoutingClient.RouteResult.Unavailable -> {
-                            deviationMonitor.markRouteUnavailable()
-                            JourneyStateStore.update {
-                                it.copy(
-                                    routeMonitoringState = deviationMonitor.state,
-                                    warningMessage = result.reason
-                                )
-                            }
+            // Refresh the route at journey start. A cached route may have an old origin
+            // even when the destination has not changed since the previous journey.
+            serviceScope.launch {
+                when (val result = routingClient.fetchRoute(best.latitude, best.longitude, dest.latitude, dest.longitude)) {
+                    is OsrmRoutingClient.RouteResult.Success -> {
+                        JourneyStateStore.setRouteData(this@LocationTrackingService, result.route)
+                        deviationMonitor.markRouteLoaded()
+                    }
+                    is OsrmRoutingClient.RouteResult.Unavailable -> {
+                        if (state.routeData == null) deviationMonitor.markRouteUnavailable()
+                        JourneyStateStore.update {
+                            it.copy(
+                                routeMonitoringState = if (it.routeGuardEnabled) deviationMonitor.state else RouteMonitoringState.DISABLED,
+                                warningMessage = result.reason
+                            )
                         }
                     }
                 }
