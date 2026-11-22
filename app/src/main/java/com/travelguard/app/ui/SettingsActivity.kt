@@ -1,5 +1,6 @@
 package com.travelguard.app.ui
 
+import android.app.DownloadManager
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -9,15 +10,23 @@ import android.os.Bundle
 import android.provider.Settings
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.travelguard.app.BuildConfig
 import com.travelguard.app.TravelGuardApp
 import com.travelguard.app.data.local.TravelGuardPreferences
 import com.travelguard.app.databinding.ActivitySettingsBinding
 import com.travelguard.app.domain.model.ThemePreference
+import com.travelguard.app.update.GithubUpdateManager
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var prefs: TravelGuardPreferences
+    private var availableUpdate: GithubUpdateManager.UpdateInfo? = null
+    private var activeDownloadId: Long = -1L
+    private var downloadProgressJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -25,6 +34,12 @@ class SettingsActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         prefs = TravelGuardPreferences(this)
+        binding.tvInstalledVersion.text = "Installed version v${BuildConfig.VERSION_NAME}"
+        binding.progressUpdateDownload.max = 100
+
+        binding.btnCheckForUpdates.setOnClickListener { checkForUpdates() }
+        binding.btnDownloadUpdate.setOnClickListener { downloadUpdate() }
+        binding.btnInstallUpdate.setOnClickListener { installUpdate() }
 
         binding.toolbarSettings.setNavigationOnClickListener { finish() }
 
@@ -67,11 +82,107 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         updatePermissionSummary()
+        checkForUpdates()
     }
 
     override fun onResume() {
         super.onResume()
         updatePermissionSummary()
+    }
+
+
+    private fun checkForUpdates() {
+        binding.btnCheckForUpdates.isEnabled = false
+        binding.btnCheckForUpdates.text = "Checking..."
+        binding.tvUpdateStatus.text = "Checking the latest published GitHub Release..."
+        lifecycleScope.launch {
+            when (val result = GithubUpdateManager.checkForUpdate(BuildConfig.VERSION_NAME)) {
+                is GithubUpdateManager.CheckResult.Available -> {
+                    availableUpdate = result.update
+                    binding.tvUpdateStatus.text = buildString {
+                        append("Version v${result.update.versionName} is available.")
+                        if (result.update.releaseNotes.isNotBlank()) {
+                            append("\\n\\n")
+                            append(result.update.releaseNotes)
+                        }
+                    }
+                    binding.btnDownloadUpdate.visibility = android.view.View.VISIBLE
+                    binding.btnDownloadUpdate.isEnabled = true
+                }
+                is GithubUpdateManager.CheckResult.UpToDate -> {
+                    availableUpdate = null
+                    binding.tvUpdateStatus.text = "You're using the latest version (v${result.installedVersion})."
+                    binding.btnDownloadUpdate.visibility = android.view.View.GONE
+                }
+                is GithubUpdateManager.CheckResult.Failed -> {
+                    binding.tvUpdateStatus.text = result.reason
+                    binding.btnDownloadUpdate.visibility = android.view.View.GONE
+                }
+            }
+            binding.btnCheckForUpdates.isEnabled = true
+            binding.btnCheckForUpdates.text = "Check for updates"
+        }
+    }
+
+    private fun downloadUpdate() {
+        val update = availableUpdate ?: return
+        try {
+            activeDownloadId = GithubUpdateManager.enqueueDownload(this, update)
+            binding.btnDownloadUpdate.isEnabled = false
+            binding.btnDownloadUpdate.visibility = android.view.View.GONE
+            binding.btnInstallUpdate.visibility = android.view.View.GONE
+            binding.progressUpdateDownload.visibility = android.view.View.VISIBLE
+            binding.progressUpdateDownload.progress = 0
+            binding.tvUpdateStatus.text = "Download started. You can continue using TravelGuard."
+            downloadProgressJob?.cancel()
+            downloadProgressJob = lifecycleScope.launch {
+                while (true) {
+                    delay(500)
+                    val progress = GithubUpdateManager.getDownloadProgress(this@SettingsActivity, activeDownloadId)
+                    if (progress == null) {
+                        binding.tvUpdateStatus.text = "Download status unavailable. Please try again."
+                        break
+                    }
+                    binding.progressUpdateDownload.progress = progress.percent
+                    when (progress.status) {
+                        DownloadManager.STATUS_PENDING -> binding.tvUpdateStatus.text = "Update queued..."
+                        DownloadManager.STATUS_RUNNING -> binding.tvUpdateStatus.text = "Downloading update... ${progress.percent}%"
+                        DownloadManager.STATUS_PAUSED -> binding.tvUpdateStatus.text = "Download paused. Waiting for network..."
+                        DownloadManager.STATUS_SUCCESSFUL -> {
+                            binding.progressUpdateDownload.progress = 100
+                            binding.tvUpdateStatus.text = "Update downloaded. Tap Install when ready."
+                            binding.btnInstallUpdate.visibility = android.view.View.VISIBLE
+                            break
+                        }
+                        DownloadManager.STATUS_FAILED -> {
+                            binding.tvUpdateStatus.text = progress.reason ?: "Download failed. Please try again."
+                            binding.btnDownloadUpdate.visibility = android.view.View.VISIBLE
+                            binding.btnDownloadUpdate.isEnabled = true
+                            break
+                        }
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            binding.tvUpdateStatus.text = error.localizedMessage ?: "Unable to start the update download."
+            binding.btnDownloadUpdate.isEnabled = true
+            binding.btnDownloadUpdate.visibility = android.view.View.VISIBLE
+        }
+    }
+
+    private fun installUpdate() {
+        if (activeDownloadId < 0L) return
+        when (val result = GithubUpdateManager.installDownloaded(this, activeDownloadId)) {
+            GithubUpdateManager.InstallResult.Started -> {
+                binding.tvUpdateStatus.text = "Android package installer opened. Confirm the update there."
+            }
+            GithubUpdateManager.InstallResult.PermissionRequired -> {
+                binding.tvUpdateStatus.text = "Allow TravelGuard to install unknown apps in Android Settings, return here, then tap Install again."
+            }
+            is GithubUpdateManager.InstallResult.Failed -> {
+                binding.tvUpdateStatus.text = result.reason
+            }
+        }
     }
 
     private fun updatePermissionSummary() {
